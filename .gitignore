@@ -1,0 +1,10 @@
+# 1. Ignore the other specific directories
+/Analisis/
+/Fis_clima/
+/LaTex/
+/Meteo/
+
+# 2. Ignore common system/python junk that might be inside TFM
+**/__pycache__/
+**/.DS_Store
+**/.ipynb_checkpoints/
