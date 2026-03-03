@@ -5,6 +5,7 @@
 /Meteo/
 /TFM/
 *.png
+*.parquet
 
 # 2. Ignore common system/python junk that might be inside TFM
 **/__pycache__/
