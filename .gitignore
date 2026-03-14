@@ -5,6 +5,8 @@
 /Meteo/
 /TFM/
 /tracking-options_Elsa-Copy1.ipynb
+/.vscode/
+/parquet_sets/
 *.png
 *.parquet
 

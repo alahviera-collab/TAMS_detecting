@@ -6,16 +6,18 @@ import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import geopandas as gpd
 import pandas as pd
-import os
-from functions import dibujoMCS
-from functions import dibujoCE
 import seaborn as sns
-from joblib import Parallel, delayed
+import os
+import numpy as np
 
+from analysis_functions import dibujoMCS, dibujoCE
+from joblib import Parallel, delayed
+from scipy.stats import gaussian_kde
 
 
 import warnings
 warnings.filterwarnings('ignore')
+
 # %%
 root = "./"
 pr_pre = "precipitation_IMERG_2024_WA" # This can be changed to match the data and resolution.
@@ -77,5 +79,5 @@ ce_clasI = tams.classify(ces_T)
 # %%
 dibujoMCS(ce_clasI)
 # %%
-dibujoCE(ce_clasI)
+dibujoCE(ces_T)
 # %%
