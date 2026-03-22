@@ -1,0 +1,7 @@
+mcs_analysis/
+├── __init__.py       # Tells Python this directory is a package (can be empty)
+├── constants.py      # Storing static variables
+├── utils.py          # Shared helper functions
+├── parallel.py       # Data reading, writing, and parallel processing
+├── stats.py          # Analytical computations
+└── plotting.py       # Visualization logic

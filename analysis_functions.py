@@ -9,10 +9,12 @@ import seaborn as sns
 import numpy as np
 import tams
 import logging
+import pickle as pkl
 
 from scipy.stats import gaussian_kde
 from joblib import Parallel, delayed
 from typing import Optional
+from pathlib import Path
 
 
 log = logging.getLogger(__name__)
@@ -70,9 +72,65 @@ def _kde_scatter(ax, data:pd.DataFrame, x: str, y:str, clip=None):
         **_KDE_KWARGS,
     )
 
+def _load_classified(filename: str, root: str = "./TFM/pkl_sets") -> gpd.GeoDataFrame:
+    """Load a classified GeoDataFrame from a pickle file."""
+    filepath = os.path.join(root, f"{filename}.pkl")
+    with open(filepath, "rb") as f:
+        return pkl.load(f)
 
 #-----------------------------
-# Axuliar functions for reading data
+# Axuliar functions for reading data and analyzing data
+
+def open_pr_tp(root_data: str, pr_file: str, tb_file: str, CHUNK_T: float = 96, isnan: bool = True) -> tuple:
+    """
+    Find precipitation and brightness temperature. Using *chunks* with dask array, returns both variables as *tbI* and *tp*.
+    precipitation and temperature are renamed into pr and ctt respectively for tams usage.
+
+    Parameters
+    ----------------
+    root_data:
+        Path as *str* where data is stored.
+    pr_file:
+        Name of precipitation file in nc format. -> Gets transpose as lat and lon are swaped in dimention.
+    tb_path:
+        Name of brightness temperature file in nc format.
+    CHUNK_T:
+        96 by default, is used to make dask arrays.
+    isnan:
+        Default True, this is used for those cases where (normally tb) has nan values so we drop them
+
+    Returns
+    ---------------
+    tuple
+    """
+
+    pr_path = Path(root_data) / pr_file
+    tb_path = Path(root_data) / tb_file
+
+    pr_data = (
+        xr.open_dataset(pr_path, chunks={"time": CHUNK_T, "lat": -1, "lon": -1})
+            .transpose("time", "lat", "lon")
+            .rename({"precipitation": "pr"})
+    )
+
+    tb_data = (
+        xr.open_dataset(tb_path, chunks={"time": CHUNK_T, "lat": -1, "lon": -1})
+            .rename({"Tb": "ctt"})
+    )
+
+    if isnan:
+        # Drop based on tb only — tb is the critical variable and the most
+        # likely source of NaN frames (missing satellite passes).
+        tbI = tb_data["ctt"].dropna(dim='time', how='all')
+
+        # Reindex tp to tb's valid time axis so both share the same timestamps.
+        # tp gaps are filled with 0 (no precip), not dropped independently.
+        tp = pr_data["pr"].sel(time=tbI.time).fillna(0)
+    else:
+        tbI = tb_data["ctt"]
+        tp  = pr_data["pr"]
+
+    return tp, tbI
 
 def enrich_ce_slice_nan(ds_slice: xr.Dataset, ce: gpd.GeoDataFrame):
     """
@@ -141,7 +199,7 @@ def Parallel_ds(
         for i, ce in enumerate(cesI)
     )
 
-def save_parquet(cesI, filename: str, root: str = "./parquet_sets"):
+def save_parquet(cesI, filename: str, root: str = "./TFM/parquet_sets"):
 
     """
     Concatenate *cesI* and persist it as a single Parquet file.
@@ -154,7 +212,7 @@ def save_parquet(cesI, filename: str, root: str = "./parquet_sets"):
         Output file name, without extension.
     root:
         Directory where the file will be written. Created automatically if it
-        does not exist. Defaults to ``'./parquet_sets'``.
+        does not exist. Defaults to ``'./TFM/parquet_sets'``.
     """
  
     os.makedirs(root, exist_ok=True)
@@ -215,9 +273,91 @@ def list_from_parquet(
     for i in range(n_times)
     ]
 
+# STATS FUNCTIONS -----------
 
-#------------------------------
-def dibujoMCS(ce_clasI):
+def mcs_class_stats(cesC):
+    """
+    Calculates statistics for a classified GeoDataFrame from :func:`tams.classify`.
+ 
+    Parameters
+    ----------
+    cesC : gpd.GeoDataFrame
+        GeoDataFrame produced by ``tams.classify()``. Must contain columns:
+        'mcs_class', 'area_km2', 'mean_tb', 'min_tb', 'max_tb', 'mean_tp',
+        'mcs_id', 'itime', 'time', 'geometry'.
+ 
+    Returns
+    -------
+    dict with keys:
+        - 'ce'        : full CE-level GeoDataFrame with derived columns added
+        - 'ces_total' : Series — CE count per class
+        - 'mcs_total' : Series — unique MCS count per class
+        - 'mcs_area'  : DataFrame — total area per (mcs_id, itime, class)
+        - 'mcs_tb'    : DataFrame — mean/min/max Tb per (mcs_id, itime, class)
+        - 'mcs_tp'    : DataFrame — mean precip per (mcs_id, itime, class)
+        - 'mcs_dur'   : DataFrame — duration [h] per (mcs_id, class)
+    """
+
+    # 0 - Define columns for later use
+    ce  = _add_spatial_temporal_cols(cesC)
+    ce["mcs_class"] = ce.mcs_class.cat.reorder_categories(_MCS_ORDER, ordered=True)
+    ce["str_class"] = _ordered_cat(ce.mcs_class.astype(str))
+    ce["tb_area"] = ce["area_km2"] * ce["mean_tb"]
+    ce["tp_area"] = ce["area_km2"] * ce["mean_tp"]
+ 
+    # 1 - order and get total number of ces_clases and mcs then calculate fraction of total for each class
+    # Here, I count each cloud element that can or not be the same MCS.
+    ces_total = ce.groupby(["mcs_class"], observed=True).mcs_id.count()
+    # Here, I count each MCS.
+    mcs_total = ce.groupby(["mcs_class"], observed=True).mcs_id.nunique()
+
+    logging.info(
+        "CE percentages per type:\n%s",
+        (ces_total / ces_total.sum() * 100).round(4)
+    )
+    logging.info(
+        "MCS percentages per type:\n%s",
+        (mcs_total / mcs_total.sum() * 100).round(4)
+    )
+
+    # 2 - Group them and then get each stats for each class
+
+    grp = ce.groupby(["mcs_id", "itime", "str_class"])
+    agg = grp.agg(
+        area_km2=("area_km2", "sum"),
+        tb_area =("tb_area", "sum"),
+        tb_min  =("min_tb", "min"),
+        tb_max  =("max_tb", "max"),
+        tp_area =("tp_area", "sum"),
+    )
+
+    # Do weighted mean for those cases where a single MCS is split across multiple CE fragements
+    agg["tb_mean"] = agg["tb_area"]/agg["area_km2"]
+    agg["tp_mean"] = agg["tp_area"]/agg["area_km2"]
+
+    # 3 - estimate duration for each mcs
+    dur = (
+        ce.groupby(["mcs_id", "mcs_class"], observed=True)
+        .time.agg(lambda s: (s.max() - s.min()).total_seconds() / 3600)
+        .rename("duration_h")
+        .dropna()
+        .reset_index()
+    )
+
+    dur["str_class"] = _ordered_cat(dur["mcs_class"].astype(str))
+
+    return {
+        "ce" : ce,
+        "ces_total" : ces_total,
+        "mcs_total" : mcs_total,
+        "mcs_area": agg[["area_km2"]].reset_index(),
+        "mcs_tb": agg[["tb_mean", "tb_min", "tb_max"]].reset_index(),
+        "mcs_tp": agg[["tp_mean"]].reset_index(),
+        "mcs_dur": dur,
+    }
+
+# PLOTTING FUNCTIONS ------------------------------
+def dibujoMCS(cesC: gpd.GeoDataFrame):
     """
     Distribution plots for CEs and MCSs broken down by class.
     """
@@ -227,14 +367,15 @@ def dibujoMCS(ce_clasI):
     igraf=0
 
     
-    ce = _add_spatial_temporal_cols(ce_clasI)
-    ce["mcs_class"]  = ce.mcs_class.cat.reorder_categories(_MCS_ORDER, ordered=True)
-    ce["str_class"]  = _ordered_cat(ce.mcs_class.astype(str))
+    stats = mcs_class_stats(cesC)
+
+    ce        = stats["ce"]
+    ces_clases = stats["ces_total"]
+    mcs_clases = stats["mcs_total"]
 
     
     # igraf = igraf + 1
     # PANEL 1: Distribución de CEs (para cada tiempo, los elementos son disjuntos y solo los clasifico y cuento)
-    ces_clases = ce.groupby(["mcs_class"], observed=True).mcs_id.count()
     ax = fig.add_subplot(ncol,nfil, 1)
     ax.bar(ces_clases.index, ces_clases/ces_clases.sum()*100)
     ax.grid()
@@ -243,7 +384,6 @@ def dibujoMCS(ce_clasI):
 
     #igraf = igraf + 1
     # PANEL 2: Distribución de MCSs (cuento cada identificador mcs_id una sola vez)
-    mcs_clases=ce.groupby(["mcs_class"], observed=True).mcs_id.nunique()
     ax = fig.add_subplot(ncol,nfil,2)
     ax.bar(mcs_clases.index, mcs_clases/mcs_clases.sum()*100)
     ax.grid()
@@ -264,68 +404,36 @@ def dibujoMCS(ce_clasI):
     #igraf = igraf + 1
     # PANEL 6 AL 10: Boxplot del área de cada MCS clasificada por tipo 
     # (para cada tiempo, sumo el área del mismo MCS)
-    ce["tb_area"]= ce["area_km2"] * ce["mean_tb"]
-    ce["tp_area"] = ce["area_km2"] * ce["mean_tp"]
-
-    grp = ce.groupby(["mcs_id", "itime", "str_class"])
-
-    agg = grp.agg(
-        area_km2=("area_km2","sum"),
-        tb_area=("tb_area", "sum"),
-        tp_area=("tp_area", "sum"),
-        min_tb=("min_tb", "sum"),
-    )
-    agg["mean_tb"]= agg["tb_area"]/agg["area_km2"]
-    agg["mean_tp"]= agg["tp_area"]/agg["area_km2"]
-
-    dur = (
-        ce.groupby(["mcs_id", "mcs_class"], observed=True)
-        .time.agg(lambda s: (s.max() - s.min()).total_seconds() / 3600)
-        .rename("duration_h")
-        .dropna()
-        .reset_index()
-    )
-
-    dur["mcs_class"] = _ordered_cat(dur["mcs_class"].astype(str))
-
-    def _flat(df: pd.DataFrame):
-        out = df.reset_index(level=["mcs_id", "itime"], drop=True).reset_index()
-        out["str_class"]  = _ordered_cat(out["str_class"].astype(str))
-        return out
-    
-    flat = _flat(agg)
 
     # PANEL 6: total area
     ax = fig.add_subplot(ncol, nfil, 6)
-    _boxplot_by_class(flat, "area_km2", "Total area [km$^2]", ax)
+    _boxplot_by_class(stats["mcs_area"], "area_km2", "Total area [km$^2]", ax)
     ax.set_yscale("log")
 
 
     #igraf = igraf + 1
     # PANEL 7: Duración total MCS
     ax = fig.add_subplot(ncol,nfil,7)
-    dur.boxplot(column="duration_h", by="mcs_class", ax=ax)
-    ax.set_ylabel("Duration [h]")
-    ax.set_xlabel("")
+    _boxplot_by_class(stats["mcs_dur"], "duration_h", "Duration [h]", ax)
 
     
     #igraf = igraf + 1
     # PANEL 8: temperatura brillo promedio en cada MCSs clasificado por tipo
     # (para cada tiempo, sumo la precipitación media pesada por el área abarcada)
     ax = fig.add_subplot(ncol, nfil, 8)
-    _boxplot_by_class(flat, "mean_tb", "Mean Tb [K]", ax)
+    _boxplot_by_class(stats["mcs_tb"], "tb_mean", "Mean Tb [K]", ax)
     
     
     #igraf = igraf + 1
     # PANEL 9: Temperatura de brillo mínima por MCS:
     ax = fig.add_subplot(ncol, nfil, 9)
-    _boxplot_by_class(flat, "min_tb", "Minum Tb [K]", ax)
+    _boxplot_by_class(stats["mcs_tb"], "tb_min", "Minum Tb [K]", ax)
 
     #igraf = igraf + 1
     # PANEL 10: Precipitación promedio en cada MCSs clasificado por tipo
     # (para cada tiempo, sumo la precipitación media pesada por el área abarcada)
     ax = fig.add_subplot(ncol, nfil, 10)
-    _boxplot_by_class(flat, "mean_tp", "Mean precip [mm h${-1}$]",ax)
+    _boxplot_by_class(stats["mcs_tp"], "tp_mean", "Mean precip [mm h${-1}$]",ax)
     
     
 def dibujoCE(ce_trackI):
@@ -339,8 +447,9 @@ def dibujoCE(ce_trackI):
     gb = ce_trackI.groupby("mcs_id")
     
     mcs_stats = gb.agg(
-        arrea_max=("area_km2", "max"),
+        area_max=("area_km2", "max"),
         min_tb=("min_tb", "min"),
+        mean_tb=("mean_tb", "mean"),
         mean_tp=("mean_tp", "mean"),
         max_tp=("max_tp", "max"),
         time_min=("time", "min"),
@@ -355,7 +464,8 @@ def dibujoCE(ce_trackI):
         "area_max": float,
         "min_tb": float,
         "mean_tp": float,
-        "min_tp": float,
+        "max_tp": float,
+        "max_tp": float,
     })
 
     mcs_area_max = ce_trackI.groupby(["mcs_id", "itime"]).area_km2.sum().groupby("mcs_id").max()
@@ -416,7 +526,7 @@ def dibujoCE(ce_trackI):
 
     ax = fig.add_subplot(2,2,4)
     data2 = mcs_stats[["min_tb", "max_tp"]].dropna()  
-    ax.plot(data2["min_tb"], data1["max_tp"], ".", mec="none", mfc="0.35", alpha=0.9)
+    ax.plot(data2["min_tb"], data2["max_tp"], ".", mec="none", mfc="0.35", alpha=0.9)
     sns.kdeplot(
         x="min_tb", y="max_tp",
         fill=False, color=sns.color_palette()[0], alpha=0.6,
@@ -427,7 +537,7 @@ def dibujoCE(ce_trackI):
 
 def seasonal_latlon(
         tbI: xr.DataArray,
-        ce_clasI: gpd.GeoDataFrame,
+        stats: dict,
         mcs_class: str,
 ) -> plt.Figure:
     """
@@ -447,8 +557,8 @@ def seasonal_latlon(
         Brightness temperature array with a 'time' coordinate in datetime
         format. Used only to derive the season boundaries (first/last day
         of year).
-    ce_clasI : gpd.GeoDataFrame
-        GeoDataFrame produced by ``tams.classify()``. Must contain columns:
+    ce_clasI : dict
+        dict produced by ``mcs_class_stats``. Must contain columns:
         'mcs_class', 'cent_lat', 'cent_lon', 'day_yr', 'mcs_id', 'itime'.
     mcs_class : str
         MCS class to plot. Must be one of 'DSL', 'DLL', 'CCC', 'MCC'.
@@ -464,7 +574,8 @@ def seasonal_latlon(
     start = int(tbI.time.min().dt.dayofyear)
     end = int(tbI.time.max().dt.dayofyear)
 
-    ce = _add_spatial_temporal_cols(ce_clasI[ce_clasI["mcs_class"] == mcs_class])
+    ce = stats["ce"]
+    ce = ce[ce["str_class"] == mcs_class]
 
     if ce.empty:
         raise ValueError(f"No data found for mcs_class={mcs_class!r}.")
@@ -516,4 +627,3 @@ def seasonal_latlon(
     ax3.set_ylabel("Latitude [°]")
  
     fig.tight_layout()
-
