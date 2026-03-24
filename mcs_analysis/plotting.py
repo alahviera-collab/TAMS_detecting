@@ -33,120 +33,109 @@ def _kde_scatter(ax, data: pd.DataFrame, x: str, y: str, clip=None):
         **_KDE_KWARGS,
     )
 
-def dibujoMCS(cesC: gpd.GeoDataFrame):
+def dibujoMCS(cesC: gpd.GeoDataFrame, has_tp: bool = True):
     """
     Distribution plots for CEs and MCSs broken down by class.
     """
-    # ¿Cómo se distribuyen los CE y los MCS en las distintas clases?
-    fig = plt.figure(figsize = (10,20))
-    ncol,nfil = 6, 2
-    igraf=0
+    stats = mcs_class_stats(cesC, has_tp=has_tp)
 
-    
-    stats = mcs_class_stats(cesC)
-
-    ce        = stats["ce"]
+    ce         = stats["ce"]
     ces_clases = stats["ces_total"]
     mcs_clases = stats["mcs_total"]
 
-    
-    # igraf = igraf + 1
-    # PANEL 1: Distribución de CEs (para cada tiempo, los elementos son disjuntos y solo los clasifico y cuento)
-    ax = fig.add_subplot(ncol,nfil, 1)
-    ax.bar(ces_clases.index, ces_clases/ces_clases.sum()*100)
-    ax.grid()
-    ax.set_title('Count of CEs per type. Total='+str(ces_clases.sum()))
-    ax.set_ylabel('[%]')
+    # Adjust grid: 5 rows if no tp (drop panel 10), 6 rows if tp present
+    nrow = 6 if has_tp else 5
+    ncol = 2
+    fig  = plt.figure(figsize=(10, nrow * 10 / 3))
 
-    #igraf = igraf + 1
-    # PANEL 2: Distribución de MCSs (cuento cada identificador mcs_id una sola vez)
-    ax = fig.add_subplot(ncol,nfil,2)
-    ax.bar(mcs_clases.index, mcs_clases/mcs_clases.sum()*100)
+    # PANEL 1: CE count per class
+    ax = fig.add_subplot(nrow, ncol, 1)
+    ax.bar(ces_clases.index, ces_clases / ces_clases.sum() * 100)
     ax.grid()
-    ax.set_title('Count of MCSs per type. Total='+str(mcs_clases.sum()))
-    ax.set_ylabel('[%]')
-    
-    #igraf = igraf + 1
-    #PANEL 3 AL 5: Localización en latitud, longitud y día del año típica por CE (por MCS sería muy complicado hacerlo bien)
+    ax.set_title("Count of CEs per type. Total=" + str(ces_clases.sum()))
+    ax.set_ylabel("[%]")
+
+    # PANEL 2: MCS count per class
+    ax = fig.add_subplot(nrow, ncol, 2)
+    ax.bar(mcs_clases.index, mcs_clases / mcs_clases.sum() * 100)
+    ax.grid()
+    ax.set_title("Count of MCSs per type. Total=" + str(mcs_clases.sum()))
+    ax.set_ylabel("[%]")
+
+    # PANELS 3-5: Spatial/temporal location by CE
     for igraf, (col, ylabel) in enumerate(
         [("cent_lat", "Mean latitude"), ("cent_lon", "Mean longitude"), ("day_yr", "Timing in the year")],
         start=3,
     ):
-        ax = fig.add_subplot(ncol, nfil, igraf)
+        ax = fig.add_subplot(nrow, ncol, igraf)
         ce.boxplot(column=col, by="mcs_class", ax=ax)
         ax.set_ylabel(ylabel)
         ax.set_xlabel("")
 
-    #igraf = igraf + 1
-    # PANEL 6 AL 10: Boxplot del área de cada MCS clasificada por tipo 
-    # (para cada tiempo, sumo el área del mismo MCS)
-
-    # PANEL 6: total area
-    ax = fig.add_subplot(ncol, nfil, 6)
-    _boxplot_by_class(stats["mcs_area"], "area_km2", "Total area [km$^2]", ax)
+    # PANEL 6: Total area per MCS
+    ax = fig.add_subplot(nrow, ncol, 6)
+    _boxplot_by_class(stats["mcs_area"], "area_km2", "Total area [km$^2$]", ax)
     ax.set_yscale("log")
 
-
-    #igraf = igraf + 1
-    # PANEL 7: Duración total MCS
-    ax = fig.add_subplot(ncol,nfil,7)
+    # PANEL 7: Duration per MCS
+    ax = fig.add_subplot(nrow, ncol, 7)
     _boxplot_by_class(stats["mcs_dur"], "duration_h", "Duration [h]", ax)
 
-    
-    #igraf = igraf + 1
-    # PANEL 8: temperatura brillo promedio en cada MCSs clasificado por tipo
-    # (para cada tiempo, sumo la precipitación media pesada por el área abarcada)
-    ax = fig.add_subplot(ncol, nfil, 8)
+    # PANEL 8: Mean Tb per MCS
+    ax = fig.add_subplot(nrow, ncol, 8)
     _boxplot_by_class(stats["mcs_tb"], "tb_mean", "Mean Tb [K]", ax)
-    
-    
-    #igraf = igraf + 1
-    # PANEL 9: Temperatura de brillo mínima por MCS:
-    ax = fig.add_subplot(ncol, nfil, 9)
-    _boxplot_by_class(stats["mcs_tb"], "tb_min", "Minum Tb [K]", ax)
 
-    #igraf = igraf + 1
-    # PANEL 10: Precipitación promedio en cada MCSs clasificado por tipo
-    # (para cada tiempo, sumo la precipitación media pesada por el área abarcada)
-    ax = fig.add_subplot(ncol, nfil, 10)
-    _boxplot_by_class(stats["mcs_tp"], "tp_mean", "Mean precip [mm h${-1}$]",ax)
-    
-def dibujoCE(ce_trackI):
-    """
-    Kernel density estimation (KDE) for mcs and various plots.
-    """
+    # PANEL 9: Min Tb per MCS
+    ax = fig.add_subplot(nrow, ncol, 9)
+    _boxplot_by_class(stats["mcs_tb"], "tb_min", "Minimum Tb [K]", ax)
 
-    fig = plt.figure(figsize = (10,8))
-    
-    n = ce_trackI.mcs_id.nunique()
+    # PANEL 10: Mean precipitation — only when tp is available
+    if has_tp:
+        ax = fig.add_subplot(nrow, ncol, 10)
+        _boxplot_by_class(stats["mcs_tp"], "tp_mean", "Mean precip [mm h$^{-1}$]", ax)
+
+    fig.tight_layout()
+    return fig
+
+def dibujoCE(ce_trackI: gpd.GeoDataFrame, has_tp: bool = True):
+    """
+    Kernel density estimation (KDE) for MCSs and various plots.
+    """
+    # Adjust grid: 2 rows if no tp (drop panels 3 & 4), 2x2 if tp present
+    nrow = 2 if has_tp else 1
+    fig  = plt.figure(figsize=(10, 4 * nrow))
+
+    n  = ce_trackI.mcs_id.nunique()
     gb = ce_trackI.groupby("mcs_id")
-    
-    mcs_stats = gb.agg(
-        area_max=("area_km2", "max"),
-        min_tb=("min_tb", "min"),
-        mean_tb=("mean_tb", "mean"),
-        mean_tp=("mean_tp", "mean"),
-        max_tp=("max_tp", "max"),
-        time_min=("time", "min"),
-        time_max=("time", "max")
-    )
 
+    # Build aggregation dict — tp columns only when available
+    agg_dict = dict(
+        area_max =("area_km2", "max"),
+        min_tb   =("min_tb",   "min"),
+        mean_tb  =("mean_tb",  "mean"),
+        time_min =("time",     "min"),
+        time_max =("time",     "max"),
+    )
+    if has_tp:
+        agg_dict.update(
+            mean_tp=("mean_tp", "mean"),
+            max_tp =("max_tp",  "max"),
+        )
+
+    mcs_stats = gb.agg(**agg_dict)
     mcs_stats["duration_h"] = (
         (mcs_stats["time_max"] - mcs_stats["time_min"]).dt.total_seconds() / 3600
     )
 
-    mcs_stats = mcs_stats.astype({
-        "area_max": float,
-        "min_tb": float,
-        "mean_tp": float,
-        "max_tp": float,
-        "max_tp": float,
-    })
+    cast_dict = {"area_max": float, "min_tb": float}
+    if has_tp:
+        cast_dict.update({"mean_tp": float, "max_tp": float})
+    mcs_stats = mcs_stats.astype(cast_dict)
 
     mcs_area_max = ce_trackI.groupby(["mcs_id", "itime"]).area_km2.sum().groupby("mcs_id").max()
 
     # PANEL 1: KDE of max area
-    ax = fig.add_subplot(2, 2, 1)
+    ax = fig.add_subplot(nrow, 2, 1)
     mcs_stats["area_max"].plot.kde(ax=ax, label="CE")
     mcs_area_max.plot.kde(ax=ax, label="MCS")
     ax.text(0.99, 0.03, f"$N={n}$", size=9, ha="right", va="bottom", transform=ax.transAxes)
@@ -157,57 +146,50 @@ def dibujoCE(ce_trackI):
     ax.set_xlabel("Max area [km$^2$]")
     ax.grid()
 
-    #ax.set_title('Área máxima cubierta por MCS')
-    #print('Hay que mirar cómo es en observaciones y cómo varía con distintos umbrales para T')
-    
-    
-    ###################################################################
-    # PANEL 2: Distribución de duración del MCS frente a área máxima cubierta en un tiempo dado
-    
-    ax = fig.add_subplot(2,2,2)
+    # PANEL 2: KDE of duration vs max area
+    ax = fig.add_subplot(nrow, 2, 2)
     data_ad = mcs_stats[["area_max", "duration_h"]].dropna()
-    kde = gaussian_kde((data_ad.values.T))
+    kde = gaussian_kde(data_ad.values.T)
     X, Y = np.mgrid[0:5e6:100j, 0:30:100j]
-    pos = np.column_stack((X.ravel(), Y.ravel())).T
-    Z = np.reshape(kde(pos).T, X.shape)
-    im = ax.contourf(
-        X, Y, 
+    pos  = np.column_stack((X.ravel(), Y.ravel())).T
+    Z    = np.reshape(kde(pos).T, X.shape)
+    ax.contourf(
+        X, Y,
         np.log10(np.where(Z > 0, Z, np.nan)),
         levels=np.linspace(np.log10(5e-11), np.log10(5e-7), 19),
         extend="max",
         cmap=sns.color_palette("Blues", as_cmap=True),
     )
-    
     ax.text(0.99, 0.03, f"$N={n}$", size=9, ha="right", va="bottom", transform=ax.transAxes)
-    ax.set_ylabel('Duration [h]')
-    ax.set_xlabel('Máx area [km$^2$]')
-    
-    ###################################################################
-    # PANEL 3: Comparación de min Tb vs media de precipitación.
+    ax.set_ylabel("Duration [h]")
+    ax.set_xlabel("Max area [km$^2$]")
 
-    ax = fig.add_subplot(2,2,3)
-    data1 = mcs_stats[["min_tb", "mean_tp"]].dropna()  
-    ax.plot(data1["min_tb"], data1["mean_tp"], ".", mec="none", mfc="0.35", alpha=0.9)
-    sns.kdeplot(
-        x="min_tb", y="mean_tp",
-        fill=False, color=sns.color_palette()[0], alpha=0.6,
-        common_norm=True, clip=(0, None),
-        ax=ax, data=data1,
-    )
+    # PANELS 3 & 4: min Tb vs precipitation — only when tp is available
+    if has_tp:
+        # PANEL 3: min Tb vs mean precipitation
+        ax = fig.add_subplot(nrow, 2, 3)
+        data1 = mcs_stats[["min_tb", "mean_tp"]].dropna()
+        ax.plot(data1["min_tb"], data1["mean_tp"], ".", mec="none", mfc="0.35", alpha=0.9)
+        sns.kdeplot(
+            x="min_tb", y="mean_tp",
+            fill=False, color=sns.color_palette()[0], alpha=0.6,
+            common_norm=True, clip=(0, None),
+            ax=ax, data=data1,
+        )
 
-    
-    ###################################################################
-    # PANEL 4: Comparación de min Tb vs max de precipitación.
+        # PANEL 4: min Tb vs max precipitation
+        ax = fig.add_subplot(nrow, 2, 4)
+        data2 = mcs_stats[["min_tb", "max_tp"]].dropna()
+        ax.plot(data2["min_tb"], data2["max_tp"], ".", mec="none", mfc="0.35", alpha=0.9)
+        sns.kdeplot(
+            x="min_tb", y="max_tp",
+            fill=False, color=sns.color_palette()[0], alpha=0.6,
+            common_norm=True, clip=(0, None),
+            ax=ax, data=data2,
+        )
 
-    ax = fig.add_subplot(2,2,4)
-    data2 = mcs_stats[["min_tb", "max_tp"]].dropna()  
-    ax.plot(data2["min_tb"], data2["max_tp"], ".", mec="none", mfc="0.35", alpha=0.9)
-    sns.kdeplot(
-        x="min_tb", y="max_tp",
-        fill=False, color=sns.color_palette()[0], alpha=0.6,
-        common_norm=True, clip=(0, None),
-        ax=ax, data=data2,
-    )
+    fig.tight_layout()
+    return fig
 
 def seasonal_latlon(
         tbI: xr.DataArray,
