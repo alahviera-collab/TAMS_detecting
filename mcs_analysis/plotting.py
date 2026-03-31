@@ -33,7 +33,7 @@ def _kde_scatter(ax, data: pd.DataFrame, x: str, y: str, clip=None):
         **_KDE_KWARGS,
     )
 
-def dibujoMCS(cesC: gpd.GeoDataFrame, has_tp: bool = True):
+def dibujoMCS(cesC: gpd.GeoDataFrame, resolution: str = "Original", title_name: str = "Statistical information by CEs and MCS class", has_tp: bool = True):
     """
     Distribution plots for CEs and MCSs broken down by class.
     """
@@ -46,7 +46,10 @@ def dibujoMCS(cesC: gpd.GeoDataFrame, has_tp: bool = True):
     # Adjust grid: 5 rows if no tp (drop panel 10), 6 rows if tp present
     nrow = 6 if has_tp else 5
     ncol = 2
-    fig  = plt.figure(figsize=(10, nrow * 10 / 3))
+    ROW_HEIGHT = 10/3
+
+
+    fig  = plt.figure(figsize=(10, nrow * ROW_HEIGHT))
 
     # PANEL 1: CE count per class
     ax = fig.add_subplot(nrow, ncol, 1)
@@ -72,7 +75,23 @@ def dibujoMCS(cesC: gpd.GeoDataFrame, has_tp: bool = True):
         ax.set_ylabel(ylabel)
         ax.set_xlabel("")
 
-    # PANEL 6: Total area per MCS
+    boxplot_panels = [
+        (6, stats["mcs_area"], "area_km2", "Total area [km$^2$]", "log"),
+        (7, stats["mcs_dur"], "duration_h", "Duration [h]", None),
+        (8, stats["mcs_tb"], "tb_mean", "Mean Tb [K]", None),
+        (9, stats["mcs_tb"], "tb_min", "Minimum Tb [K]", None),
+    ]
+
+    if has_tp:
+        boxplot_panels.append((10, stats["mcs_tp"], "tp_mean", "Mean precip. [mm h$^{-1}$]", None))
+
+    for panel_idx, data, col, ylabel, yscale in boxplot_panels:
+        ax = fig.add_subplot(nrow, ncol, panel_idx)
+        _boxplot_by_class(data, col, ylabel, ax)
+        if yscale:
+            ax.set_yscale(yscale)
+    
+    """# PANEL 6: Total area per MCS
     ax = fig.add_subplot(nrow, ncol, 6)
     _boxplot_by_class(stats["mcs_area"], "area_km2", "Total area [km$^2$]", ax)
     ax.set_yscale("log")
@@ -92,9 +111,11 @@ def dibujoMCS(cesC: gpd.GeoDataFrame, has_tp: bool = True):
     # PANEL 10: Mean precipitation — only when tp is available
     if has_tp:
         ax = fig.add_subplot(nrow, ncol, 10)
-        _boxplot_by_class(stats["mcs_tp"], "tp_mean", "Mean precip [mm h$^{-1}$]", ax)
+        _boxplot_by_class(stats["mcs_tp"], "tp_mean", "Mean precip [mm h$^{-1}$]", ax)"""
 
     fig.tight_layout()
+    fig.suptitle(f"{title_name}. Resolution: {resolution}", fontsize=16, y=1)
+    
     return fig
 
 def dibujoCE(ce_trackI: gpd.GeoDataFrame, has_tp: bool = True):
@@ -195,6 +216,8 @@ def seasonal_latlon(
         tbI: xr.DataArray,
         stats: dict,
         mcs_class: str,
+        resolution: str = "Original", 
+        title_name: str = "Seasonal relationship between MCS location"
 ) -> plt.Figure:
     """
     Plot the seasonal (day-of-year) relationship between MCS location for a
@@ -283,3 +306,4 @@ def seasonal_latlon(
     ax3.set_ylabel("Latitude [°]")
  
     fig.tight_layout()
+    fig.suptitle(f"{title_name} for MCS class: {mcs_class}. Resolution: {resolution}.")
